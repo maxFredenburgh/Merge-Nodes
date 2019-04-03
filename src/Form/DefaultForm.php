@@ -4,6 +4,7 @@ namespace Drupal\mergenodes\Form;
 
 use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\node\Entity\NodeType;
 
 /**
  * Class DefaultForm.
@@ -11,144 +12,153 @@ use Drupal\Core\Form\FormStateInterface;
 class DefaultForm extends FormBase {
 
 
-    /**
-     * {@inheritdoc}
-     */
-    public function getFormId() {
-        return 'mergeNodesForm';
+  /**
+   * {@inheritdoc}
+   */
+  public function getFormId() {
+    return 'mergeNodesForm';
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function buildForm(array $form, FormStateInterface $form_state) {
+    // generate a list of content types
+    $all_content_types = NodeType::loadMultiple();
+    $content_types = array();
+    foreach ($all_content_types as $machine_name => $content_type) {
+      $content_types[$content_type->id()] = $content_type->label();
     }
+    ksort($content_types);
 
-    /**
-     * {@inheritdoc}
-     */
-    public function buildForm(array $form, FormStateInterface $form_state) {
-        $session = \Drupal::request()->getSession();
-        $form['contenttype'] = [
-            '#type' => 'select',
-            '#title' => $this->t('Select a content type to merge'),
-            '#options' => ['app' => $this->t('App'), 'page' => $this->t('Basic page'), 'blog_post' => $this->t('Blog post'), 'commitment' => $this->t('Commitment'), 'consultation' => $this->t('Consultation'), 'idea' => $this->t('Idea'), 'landing_page' => $this->t('Landing page'), 'suggested_dataset' => $this->t('Suggested dataset'), 'webform' => $this->t('Webform')],
-            '#size' => 5,
-            '#weight' => '0',
-        ];
-        $form['alt_button'] = array(
-            '#type' => 'submit',
-            '#value' => t('View Node Mappings'),
-            '#name' => 'view_mappings',
-            '#submit' => array([$this, 'viewMappings']),
-        );
-            $form['node_translations'] = [
-                '#type' => 'table',
-                '#header' => [
-                    $this->t('Default Node (English)'),
-                    $this->t('Translation Node (French)')
-                ],
-                '#rows' => [],
-            ];
+    // create a simple multi select list of content types
+    $form['contenttype'] = [
+      '#type' => 'select',
+      '#title' => $this->t('Select a content type to merge'),
+      '#options' => $content_types,
+      '#size' => count($content_types),
+      '#weight' => '0',
+    ];
 
-        if(!empty($session->get('contenttype'))){
-            $nids = \Drupal::entityQuery('node')->condition('type',$session->get('contenttype'))->execute();
-            $nodes =  \Drupal\node\Entity\Node::loadMultiple($nids);
-            foreach ($nodes as $node){
-                if($node->get('langcode')->value=='en'){
-                    $this->node = $node;
-                    foreach ($nodes as $no){
-                        if(($no->get('field_previous_id')->value == ($node->get('field_previous_id')->value))
-                            and ($no->get('langcode')->value=='fr')){
-                            $form['node_translations'][$node->get('title')->value]['node_source']=['#markup' => $this->t($node->get('title')->value)] ;
-                            $form['node_translations'][$node->get('title')->value]['node_trans']=['#markup' => $this->t($no->get('title')->value)];
-                        }
-                    }
-                }
+    if ($form_state->isSubmitted()) {
+      // get selected content type
+      $content_type = $form_state->getValue('contenttype');
+      if (empty($content_type)) {
+        drupal_set_message("No content type selected for mapping", 'warning');
+      }
+      else {
+        // fetch all nodes of content type
+        $query = \Drupal::entityQuery('node');
+        $query->condition('type', $content_type);
+        $query->exists('field_previousnodeid');
+        $query->sort('field_previousnodeid');
+        $query->sort('langcode');
+        $nids = $query->execute();
+        $nodes = \Drupal\node\Entity\Node::loadMultiple($nids);
+
+        // generate a mapping table of translations
+        $rows = array();
+        foreach ($nodes as $node) {
+          if ($node->get('langcode')->value == 'en') {
+            foreach ($nodes as $node_translation) {
+              if (($node_translation->get('field_previousnodeid')->value == ($node->get('field_previousnodeid')->value))
+                and ($node_translation->get('langcode')->value == 'fr')) {
+                $rows[] = array(
+                  $node->get('title')->value,
+                  $node_translation->get('title')->value,
+                );
+              }
             }
+          }
         }
 
-        $form['submit'] = [
-            '#type' => 'submit',
-            '#title' => $this->t('Merge'),
-            '#value' => $this->t('Submit'),
+        // generate a table of mappings to render
+        $form['mapping'] = [
+          '#type' => 'table',
+          '#header' => [$this->t('English'), $this->t('French')],
+          '#rows' => $rows,
         ];
 
-        return $form;
-    }
-    public function viewMappings(array &$form, FormStateInterface &$form_state) {
-        $session = \Drupal::request()->getSession();
-        $session->set('contenttype',$form_state->getValue('contenttype'));
-        $form_state->setRebuild();
-    }
-    /**
-     * {@inheritdoc}
-     */
-    public function validateForm(array &$form, FormStateInterface $form_state) {
-        parent::validateForm($form, $form_state);
+      }
     }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function submitForm(array &$form, FormStateInterface $form_state) {
-        // Display result.
-        /*foreach ($form_state->getValues() as $key => $value) {
-          drupal_set_message($key . ': ' . $value);
-        }*/
-        $contenttype = $form_state->getValue('contenttype');
+    // button to view node mapping
+    $form['view_mapping'] = array(
+      '#name' => 'view_mappings',
+      '#type' => 'submit',
+      '#value' => t('View Mapping'),
+      '#submit' => array([$this, 'viewMappings']),
+    );
 
-        if ($contenttype) {
-            $nids = \Drupal::entityQuery('node')->condition('type',$contenttype)->execute();
-            $nodes =  \Drupal\node\Entity\Node::loadMultiple($nids);
+    // submit button
+    $form['submit'] = [
+      '#type' => 'submit',
+      '#value' => $this->t('Merge translations'),
+    ];
 
-            foreach ($nodes as $node){
-                if($node->get('langcode')->value=='en'){
-                    $this->node = $node;
-                    foreach ($nodes as $no){
-                        if(($no->get('field_previous_id')->value == ($node->get('field_previous_id')->value))
-                                and ($no->get('langcode')->value=='fr')){
-                            $this->mergeTranslations($no, 'fr');
-                            $this->removeNode($no);
-                            $this->node->save();
-                        }
-                    }
-                }
-            }
+    return $form;
+  }
+
+  public function viewMappings(array &$form, FormStateInterface &$form_state) {
+    $form_state->setRebuild();
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function validateForm(array &$form, FormStateInterface $form_state) {
+    parent::validateForm($form, $form_state);
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function submitForm(array &$form, FormStateInterface $form_state) {
+    $content_type = $form_state->getValue('contenttype');
+    if (empty($content_type)) {
+      drupal_set_message('No content type selected to merge', 'warning');
+    }
+    else {
+      // 1. Fetch all nodes of content type
+      $query = \Drupal::entityQuery('node');
+      $query->condition('type', $content_type);
+      $query->exists('field_previousnodeid');
+      $query->sort('field_previousnodeid');
+      $query->sort('langcode');
+      $nids = $query->execute();
+      $keys = array_keys($nids);
+      $storage_handler = \Drupal::entityTypeManager()->getStorage("node");
+
+      for($i = 0; $i < sizeof($keys); $i++) {
+        // 2. Load the field_previousnodeid for the first node
+        $node1 = $storage_handler->load($nids[$keys[$i]]);
+        $node1_previousnodeid = $node1->get('field_previousnodeid')->getValue();
+        $node1_langcode = $node1->language()->getId();
+
+        // 3. check the field_previousnodeid for the next node
+        $node2 = $storage_handler->load($nids[$keys[$i+1]]);
+        if ($node2) {
+          $node2_previousnodeid = $node2->get('field_previousnodeid')->getValue();
+          $node2_langcode = $node2->language()->getId();
+
+          if (($node1_previousnodeid[0]['value'] == $node2_previousnodeid[0]['value'])
+            and ($node1_langcode != $node2_langcode)) {
+            // 4. If both have same value for field_previousnodeid merge the second node as a translation and delete after merging
+            $node1->addTranslation($node2_langcode, $node2->getTranslation($node2_langcode)->toArray());
+            $node1->save();
+            $node2->delete();
+            drupal_set_message('Merged translation' . $node2->get('title')->value . ' with ' . $node1->get('title')->value );
+
+            // move counter one ahead
+            $i++;
+          }
+          else {
+            drupal_set_message('No translation found for ' . $node1->get('title')->value, 'error');
+          }
         }
-        else {
-            drupal_set_message("No content type selected", 'warning');
-        }
-
+      }
     }
-    private function removeNode($node_source) {
-        try {
-            // $this->messenger->addStatus($this->t('Node @node has been removed.', ['@node' => $node_source->getTitle()]));
-            $node_source->delete();
 
-            return TRUE;
-        }
-        catch (\Exception $e) {
-            return $e;
-        }
-    }
-    private function mergeTranslations($node_source, $langcode) {
-        //$languages = $this->languages->getLanguages();
-        //wrapper for all node sources
-        //run this process for all english nodes with translation source as the french nodes
-
-
-            $this->addTranslation($langcode, $node_source->toArray());
-
-    }
-    private function addTranslation($langcode, array $node_array) {
-
-        $node_target = $this->node;
-        $message_argumens = [
-            '@langcode' => $langcode,
-            '@title' => $node_target->getTitle(),
-        ];
-
-        if (!$node_target->hasTranslation($langcode)) {
-            $node_target->addTranslation($langcode, $node_array);
-            return TRUE;
-        }
-
-        return FALSE;
-    }
+  }
 
 }
